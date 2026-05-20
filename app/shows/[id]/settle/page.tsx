@@ -29,6 +29,7 @@ import {
 } from "@/lib/format";
 import type { Settlement, Recoup } from "@/db/schema";
 import { Logomark } from "@/components/brand/logo";
+import { buildVsSettlementConfidence } from "@/lib/vsSettlementConfidence";
 
 const RECOUP_LABELS: Record<Recoup["category"], string> = {
   marketing: "Marketing",
@@ -77,6 +78,16 @@ export default async function SettlePage({
   const disputedRecoups = recoups.filter((r) => r.status === "disputed");
   const isDisputed = settlement?.status === "disputed" || settlement?.status === "revised" || !!settlement?.disputedAt;
   const disputedRecoupValue = disputedRecoups.reduce((s, r) => s + r.amount, 0);
+  const vsConfidence =
+    deal.dealType === "vs"
+      ? buildVsSettlementConfidence({
+          deal,
+          ticketSales,
+          expenses,
+          settlement: settlement ?? null,
+          recoups,
+        })
+      : null;
 
   return (
     <div className={`px-12 py-10 max-w-7xl ${isDisputed ? "bg-gradient-to-b from-rose-50/30 via-canvas to-canvas" : ""}`}>
@@ -127,6 +138,10 @@ export default async function SettlePage({
       )}
 
       <div className="space-y-6 mt-6">
+        {deal.dealType === "vs" && vsConfidence && (
+          <VsDealConfidenceLayer confidence={vsConfidence} />
+        )}
+
         {!calc.supported ? (
           <UnsupportedDeal
             dealType={calc.dealType}
@@ -713,5 +728,156 @@ function Row({
         {value}
       </div>
     </div>
+  );
+}
+
+function VsDealConfidenceLayer({
+  confidence,
+}: {
+  confidence: ReturnType<typeof buildVsSettlementConfidence>;
+}) {
+  const sourceLabels: Record<string, string> = {
+    notes: "notes",
+    structured: "structured",
+    notes_and_structured_agree: "notes + structured agree",
+  };
+
+  return (
+    <Card accent="brand">
+      <CardHeader>
+        <div>
+          <CardTitle>Vs Deal Confidence Layer</CardTitle>
+          <CardDescription>{confidence.positioningBlurb}</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div>
+          <div className="eyebrow text-[10px] text-ink-500 mb-2">
+            Parsed deal terms
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field
+              label="Guarantee"
+              mono
+              value={formatMoney(confidence.parsed.guarantee)}
+            />
+            <Field
+              label="Artist percentage"
+              mono
+              value={
+                confidence.parsed.percentage != null
+                  ? `${(confidence.parsed.percentage * 100).toFixed(2)}%`
+                  : "—"
+              }
+            />
+            <Field
+              label="Percentage basis"
+              value={
+                confidence.parsed.percentageBasis === "gross"
+                  ? "Gross"
+                  : confidence.parsed.percentageBasis ===
+                      "net_after_effective_expenses"
+                    ? "Net after effective expenses"
+                    : "Unknown"
+              }
+            />
+            <Field
+              label="Expense cap"
+              mono
+              value={formatMoney(confidence.parsed.expenseCap)}
+            />
+          </div>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {Object.entries(confidence.parsed.fieldSources).map(([k, v]) => (
+              <div key={k} className="text-[11px] text-ink-500">
+                {k}: {sourceLabels[v] ?? v}
+              </div>
+            ))}
+          </div>
+          {confidence.parsed.variantFlags.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {confidence.parsed.variantFlags.map((f) => (
+                <PlainBadge key={f} variant="default">
+                  {f.replaceAll("_", " ")}
+                </PlainBadge>
+              ))}
+            </div>
+          )}
+          {confidence.parsed.extractionGaps.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {confidence.parsed.extractionGaps.map((gap, i) => (
+                <div key={i} className="text-[12px] text-ink-500">
+                  • {gap}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="eyebrow text-[10px] text-ink-500 mb-2">
+            Estimated payout path (illustrative)
+          </div>
+          <div className="rounded-lg border border-ink-200/70 divide-y divide-ink-100">
+            {confidence.steps.map((step, i) => (
+              <div
+                key={`${step.label}-${i}`}
+                className="px-4 py-2.5 flex items-start justify-between gap-3"
+              >
+                <div>
+                  <div className="text-[12.5px] text-ink-700">{step.label}</div>
+                  {step.note && (
+                    <div className="text-[11px] text-ink-400 mt-0.5">{step.note}</div>
+                  )}
+                </div>
+                <div className="text-[12.5px] font-mono tabular text-ink-900 shrink-0">
+                  {step.value == null ? "—" : formatMoney(step.value)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-[12px] text-ink-600 leading-relaxed">
+            {confidence.illustrativeExplanation}
+          </p>
+        </div>
+
+        <div>
+          <div className="eyebrow text-[10px] text-ink-500 mb-2">
+            Ambiguity & mismatch flags
+          </div>
+          {confidence.warnings.length === 0 ? (
+            <div className="text-[12.5px] text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200/70 rounded-md px-3 py-2">
+              No obvious mismatches detected between notes, structured fields,
+              and logged settlement totals.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {confidence.warnings.map((w, i) => (
+                <div
+                  key={`${w.title}-${i}`}
+                  className={`rounded-md px-3 py-2 ring-1 ${
+                    w.severity === "warning"
+                      ? "bg-amber-50 text-amber-900 ring-amber-200/80"
+                      : "bg-sky-50 text-sky-900 ring-sky-200/80"
+                  }`}
+                >
+                  <div className="text-[12px] font-medium">{w.title}</div>
+                  <div className="text-[11.5px] mt-0.5">{w.detail}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="eyebrow text-[10px] text-ink-500 mb-2">
+            2am explanation for tour manager
+          </div>
+          <div className="text-[12.5px] text-ink-800 bg-canvas-soft rounded-lg p-4 ring-1 ring-ink-200/60 leading-relaxed">
+            {confidence.tourManagerScript}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
